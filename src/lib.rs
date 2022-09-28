@@ -1,3 +1,162 @@
+use std::{ops::{Mul, Add, BitOr, BitXor, BitAnd, Sub, Shl, Shr}};
+use num::One;
+
+enum SupportedRC5WordType {
+	Word16,
+	Word32,
+	Word64
+}
+
+impl SupportedRC5WordType {
+	fn get_size_in_bits(&self) -> u32 {
+		match self {
+			Self::Word16 => u16::BITS,
+			Self::Word32 => u32::BITS,
+			Self::Word64 => u64::BITS
+		}
+	}
+}
+
+type WordSize = u32;
+
+type NumberOfRounds = u32;
+
+type KeySize = u32;
+
+type KeyTableSize = u32;
+
+type BlockLength = u32;
+
+trait RC5Word
+{
+	type T;
+
+	fn get_size_in_bits() -> WordSize;
+
+	fn P() -> Self::T;
+
+	fn Q() -> Self::T;
+
+	fn rotl(x : Self::T, y : Self::T) -> Self::T
+	where Self::T : Add<Output = Self::T> +
+		  Mul<Output = Self::T> +
+		  BitOr<Output = Self::T> +
+		  BitXor<Output = Self::T> +
+		  BitAnd<Output = Self::T> +
+		  Shl<Output = Self::T> +
+		  Shr<Output = Self::T> +
+		  Sub<Output = Self::T> +
+		  From<u32> +
+		  One +
+		  Copy
+	{
+		let w : Self::T = Self::T::from(Self::get_size_in_bits());
+		let left = x.shl(y.bitand(w - Self::T::one()));
+		let right = x.shr(w - y.bitand(w - Self::T::one()));
+		left.bitor(right)
+	}
+
+	fn rotr(x : Self::T, y : Self::T) -> Self::T
+	where Self::T : Add<Output = Self::T> +
+		  Mul<Output = Self::T> +
+		  BitOr<Output = Self::T> +
+		  BitXor<Output = Self::T> +
+		  BitAnd<Output = Self::T> +
+		  Shl<Output = Self::T> +
+		  Shr<Output = Self::T> +
+		  Sub<Output = Self::T> +
+		  From<u32> +
+		  One +
+		  Copy
+	{
+		let w : Self::T = Self::T::from(Self::get_size_in_bits());
+		let left = x.shr(y.bitand(w - Self::T::one()));
+		let right = x.shl(w - y.bitand(w - Self::T::one()));
+		left.bitor(right)
+	}
+}
+
+impl RC5Word for u32 {
+	type T = u32;
+
+	fn get_size_in_bits() -> WordSize{
+		u32::BITS
+	}
+
+	fn P() -> u32 {
+		0xb7e15163
+	}
+
+	fn Q() -> u32 {
+		0x9e3779b9
+	}
+}
+
+impl RC5Word for u16 {
+	type T = u16;
+
+	fn get_size_in_bits() -> WordSize {
+		u16::BITS
+	}
+
+	fn P() -> u16 {
+		0xb7e1
+	}
+
+	fn Q() -> u16 {
+		0x9e37
+	}
+}
+
+impl RC5Word for u64 {
+	type T = u64;
+
+	fn get_size_in_bits() -> WordSize {
+		u64::BITS
+	}
+
+	fn P() -> u64 {
+		0xb7e151628aed2a6b
+	}
+
+	fn Q() -> u64 {
+		0x9e3779b97f4a7c15
+	}
+}
+
+/**
+ * Structure that represents an RC5 configuration to be used to encrypt/decrypt data
+ * with a certain private key.
+ * 
+ * They key is not part of the struct, it is meant to be passed as a parameter to the
+ * relevant methods - this means that the symbol table S is recomputed every invocation.
+ */
+struct RC5 {
+	word_size : WordSize,
+	rounds : NumberOfRounds,
+	key_size : KeySize,
+
+	key_table_size : KeyTableSize,
+
+	/// RC5 is a block cypher, so it can only encrypt blocks of fixed size at a time - this field
+	/// denotes its length.
+	block_length : BlockLength
+}
+
+impl RC5 {
+	fn create_rc5<T : RC5Word>(rounds : NumberOfRounds, key_size : KeySize) -> RC5 {
+		let w : WordSize = T::get_size_in_bits();
+
+		RC5 {
+			word_size : w,
+			rounds,
+			key_size,
+			key_table_size : 2 * rounds + 1,
+			block_length : 2 * w
+		}
+	}
+
+}
 
 /*
  * This function should return a cipher text for a given key and plaintext
