@@ -7,4 +7,5 @@ edition = "2018"
 [dependencies]
 num = "0.4"
 num-integer = "0.1"
+num-traits = "0.2"
 arrayvec = "0.7.2"
