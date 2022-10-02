@@ -1,6 +1,6 @@
-use std::{ops::{BitOr, BitXor, BitAnd, Shl, Shr}, cmp::max};
+use std::{ops::{BitOr, BitXor, BitAnd, Shl, Shr}, cmp::max, num::Wrapping};
 use num::{One, Integer};
-use num_traits::ops::wrapping;
+use num_traits::{ops::wrapping::{WrappingSub}, WrappingAdd, WrappingShl, WrappingShr};
 use num_integer::div_ceil;
 
 type WordSize = u32;
@@ -49,11 +49,17 @@ pub trait RC5Word
 		  Shl<Output = Self::T> +
 		  Shr<Output = Self::T> +
 		  From<u32> +
+		  Into<u32> +
+		  WrappingSub +
+		  WrappingShl +
+		  WrappingShr +
 		  Copy
 	{
 		let w : Self::T = Self::T::from(Self::get_size_in_bits());
-		let left = x.shl(y.bitand(w - Self::T::one()));
-		let right = x.shr(w - y.bitand(w - Self::T::one()));
+
+
+		let left = x.wrapping_shl(y.bitand(w.wrapping_sub(&Self::T::one())).into());
+		let right = x.wrapping_shr(w.wrapping_sub(&y.bitand(w.wrapping_sub(&Self::T::one()))).into());
 		left.bitor(right)
 	}
 
@@ -65,11 +71,15 @@ pub trait RC5Word
 		  Shl<Output = Self::T> +
 		  Shr<Output = Self::T> +
 		  From<u32> +
+		  Into<u32> +
+		  WrappingShl +
+		  WrappingShr +
+		  WrappingSub +
 		  Copy
 	{
 		let w : Self::T = Self::T::from(Self::get_size_in_bits());
-		let left = x.shr(y.bitand(w - Self::T::one()));
-		let right = x.shl(w - y.bitand(w - Self::T::one()));
+		let left = x.wrapping_shr(y.bitand(w.wrapping_sub(&Self::T::one())).into());
+		let right = x.wrapping_shl((w.wrapping_sub(&y.bitand(w.wrapping_sub(&Self::T::one())))).into());
 		left.bitor(right)
 	}
 }
@@ -168,11 +178,16 @@ impl RC5 {
 			  BitOr<Output = W> +
 			  BitAnd<Output = W> +
 			  BitXor<Output = W> +
+			  WrappingSub +
+			  WrappingAdd +
+			  WrappingShl +
+			  WrappingShr +
+			  Into<u32> +
 			  Shr<Output = W> {
 		let c : usize =  max(1, div_ceil(8 * self.key_size, self.word_size)) as usize;
 		let u : usize = self.word_size as usize / 8;
 		let mut L  : Vec<W> = vec![W::from(0); c];
-		let t : usize = 2 * (self.rounds as usize) + 1;
+		let t : usize = 2 * (self.rounds as usize + 1);
 		let mut S : Vec<W> = vec![W::from(0); t];
 
 		L[c-1] = W::from(0);
@@ -185,9 +200,9 @@ impl RC5 {
 
 		S[0] = W::P();
 		for i in 1 .. t-1 {
-			S[i] = S[i-1] + W::Q();
+			S[i] = S[i-1].wrapping_add(&W::Q());
 		}
-		if L.len() != t {
+		if S.len() != t {
 			return Err(RC5Error::InvalidSVectorLen);
 		}
 
@@ -199,10 +214,10 @@ impl RC5 {
 		let mut k : usize = 0;
 
 		while k < 3 * max(t, c) {
-			S[i] = W::rotl(S[i] + A + B, W::from(3));
+			S[i] = W::rotl(S[i].wrapping_add(&A.wrapping_add(&B)), W::from(3));
 			A = S[i];
 
-			L[j] = W::rotl(L[j] + A + B, A + B);
+			L[j] = W::rotl(L[j].wrapping_add(&A.wrapping_add(&B)), A.wrapping_add(&B));
 			B = L[j];
 
 			i = (i + 1) % t;
