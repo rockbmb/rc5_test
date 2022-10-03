@@ -1,5 +1,5 @@
 use std::{ops::{Rem, Add, BitXor}, cmp::max, convert::{TryFrom, TryInto}, fmt::Debug};
-use num::{Integer, PrimInt};
+use num::{Integer, PrimInt, Zero};
 use num_traits::{WrappingAdd, WrappingShl, WrappingSub};
 use num_integer::div_ceil;
 
@@ -28,7 +28,10 @@ pub enum RC5Error {
 	InvalidNumberOfRounds,
 	InvalidKeyLength,
 	InvalidLVectorLen,
-	InvalidSVectorLen
+	InvalidSVectorLen,
+
+	ImproperlyPaddedPlaintext,
+	ImproperlyPaddedCyphertext
 }
 
 pub trait RC5Word
@@ -268,6 +271,37 @@ impl RC5 {
 		cyphertext
 	}
 
+	pub fn encode<W>(&self, plaintext : &[W], key_table : &[W]) -> Result<Vec<W>, RC5Error>
+	where W : RC5Word<T = W> +
+		  WrappingAdd +
+		  PrimInt +
+		  BitXor +
+		  TryFrom<u32> +
+		  TryInto<u32> +
+		  Copy,
+		  <W as TryFrom<u32>>::Error: Debug,
+		  <W as TryInto<u32>>::Error: Debug
+	{
+		// The plaintext could be padded here, but then, when decoding, it'd require a way to
+		// keep track of whether the last word in the plaintext was added by this function or not.
+		if plaintext.len().is_odd() {
+			return Err(RC5Error::ImproperlyPaddedPlaintext);
+		}
+		let mut cyphertext = vec![W::zero(); plaintext.len()];
+		if cyphertext.len().is_zero() {
+			return Ok(cyphertext);
+		}
+
+		// This loop is overengineered for sure, but I was curious to see how slice copying worked;
+		// [using this](https://doc.rust-lang.org/std/primitive.slice.html#method.copy_from_slice).
+		for i in (0 .. plaintext.len()).step_by(2)
+		{
+			cyphertext[i ..= i + 1].copy_from_slice(&self.encode_block(&plaintext[i ..= i + 1], key_table));
+		}
+
+		Ok(cyphertext)
+	}
+
  	/// This function should return a plaintext for a given key and ciphertext
 	fn decode_block<W>(&self, cyphertext : &[W], key_table : &[W]) -> Vec<W>
 	where W : RC5Word<T = W> +
@@ -296,6 +330,34 @@ impl RC5 {
 		plaintext
 	}
 
+	pub fn decode<W>(&self, cyphertext : &[W], key_table : &[W]) -> Result<Vec<W>, RC5Error>
+	where W : RC5Word<T = W> +
+		  WrappingSub +
+		  PrimInt +
+		  BitXor +
+		  TryFrom<u32> +
+		  TryInto<u32> +
+		  Copy,
+		  <W as TryFrom<u32>>::Error: Debug,
+		  <W as TryInto<u32>>::Error: Debug
+	{
+		// Different situation here: because it has already been encrypted, the cyphertext
+		// cannot at all have odd length.
+		if cyphertext.len().is_odd() {
+			return Err(RC5Error::ImproperlyPaddedCyphertext);
+		}
+		let mut plaintext  = vec![W::zero(); cyphertext.len()];
+		if plaintext.len().is_zero() {
+			return Ok(plaintext);
+		}
+
+		for i in (0 .. plaintext.len()).step_by(2) {
+			plaintext[i ..= i + 1].copy_from_slice(&self.decode_block(&cyphertext[i ..= i + 1], key_table));
+		}
+
+		Ok(plaintext)
+	}
+
 
 }
 
@@ -320,22 +382,24 @@ mod tests {
 		let key = vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F];
 		let s = rc5_instance.setup_rc5::<u32>(key).unwrap();
 
-		let pt  = vec![0x00, 0x11];
+		let pt  = vec![0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77];
 
-		let ct = rc5_instance.encode_block(&pt, &s);
-		let pt1 = rc5_instance.decode_block(&ct, &s);
+		let ct = rc5_instance.encode(&pt, &s).unwrap();
+		
+		let res : Vec<u32> = vec![0x92BF7F69, 0xD6A03212, 0x9D61F96E, 0x9A231988, 0x93420E37, 0x1F4C830F, 0x78194BB3, 0x78B09E02];
 
 		println!("pt: {:02X?}", pt);
 		println!("ct: {:02X?}", ct);
-		println!("new pt: {:02X?}", pt1);
-    	//assert!(&ct[..] == &res[..]);
+		println!("res: {:02X?}", res);
+    	assert!(&ct[..] == &res[..]);
     }
 
     #[test]
     fn encode_b() {
-    	let key = vec![0x2B, 0xD6, 0x45, 0x9F, 0x82, 0xC5, 0xB3, 0x00, 0x95, 0x2C, 0x49, 0x10, 0x48, 0x81, 0xFF, 0x48];
+    	let key : Vec<u8> = vec![0x2B, 0xD6, 0x45, 0x9F, 0x82, 0xC5, 0xB3, 0x00, 0x95, 0x2C, 0x49, 0x10, 0x48, 0x81, 0xFF, 0x48];
     	let pt  = vec![0xEA, 0x02, 0x47, 0x14, 0xAD, 0x5C, 0x4D, 0x84];
-    	let ct  = vec![0x11, 0xE4, 0x3B, 0x86, 0xD2, 0x31, 0xEA, 0x64];
+    	let ct : Vec<u8>  = vec![0x11, 0xE4, 0x3B, 0x86, 0xD2, 0x31, 0xEA, 0x64];
+
     	let res = encode(key, pt);
     	assert!(&ct[..] == &res[..]);
     }
