@@ -1,6 +1,6 @@
-use std::{ops::{BitOr, BitXor, BitAnd, Shl, Shr}, cmp::max, num::Wrapping};
-use num::{One, Integer};
-use num_traits::{ops::wrapping::{WrappingSub}, WrappingAdd, WrappingShl, WrappingShr};
+use std::{ops::{Rem, Add, BitXor}, cmp::max, convert::{TryFrom, TryInto}, fmt::Debug};
+use num::{Integer, PrimInt};
+use num_traits::{WrappingAdd, WrappingShl, WrappingSub};
 use num_integer::div_ceil;
 
 type WordSize = u32;
@@ -12,7 +12,7 @@ type NumberOfRounds = u32;
  */
 pub const MAX_ALLOWABLE_ROUNDS : NumberOfRounds = 255;
 
-type KeyLength = u32;
+type KeyLength = usize;
 
 /**
  * Maximum allowable size of key in bytes, by default the paper advised it to be 255.
@@ -41,46 +41,62 @@ pub trait RC5Word
 
 	fn Q() -> Self::T;
 
-	fn rotl(x : Self::T, y : Self::T) -> Self::T
-	where Self::T : Integer +
-		  BitOr<Output = Self::T> +
-		  BitXor<Output = Self::T> +
-		  BitAnd<Output = Self::T> +
-		  Shl<Output = Self::T> +
-		  Shr<Output = Self::T> +
-		  From<u32> +
-		  Into<u32> +
-		  WrappingSub +
-		  WrappingShl +
-		  WrappingShr +
-		  Copy
+	/// [Note 1]
+	/// The reason TryInto can be unwrapped so carelessly is the following:
+	/// - The unsigned word types to be used all have bit lengths that
+	/// obviously fit into a u32 - u128 is the highest that Rust does natively offer
+	///
+	/// - The second argument of `PrimInt::rotate_{left, right}`, the amount of bits
+	/// to rotate, has to be of type `u32`.
+	/// - However, given a particular type e.g. `u128`, a rotation by `n : u32` bits
+	/// is the same as a rotation by `n % 128` bits
+	///
+	/// This means that when converting the number of bits to rotate by into `u32`,
+	/// the only important result is modulo the word size, which will always fit
+	/// into `u32`, regardless of whether there exists a `From` or `TryFrom` instance
+	/// into that type.
+	fn rotl(x : Self::T, y_ : Self::T) -> Self::T
+	where Self::T : PrimInt +
+		  TryFrom<u32> +
+		  TryInto<u32>,
+		  <<Self as RC5Word>::T as TryFrom<u32>>::Error: Debug,
+		  <<Self as RC5Word>::T as TryInto<u32>>::Error: Debug
 	{
-		let w : Self::T = Self::T::from(Self::get_size_in_bits());
+		let w = Self::T::try_from(Self::get_size_in_bits()).unwrap();
 
-
-		let left = x.wrapping_shl(y.bitand(w.wrapping_sub(&Self::T::one())).into());
-		let right = x.wrapping_shr(w.wrapping_sub(&y.bitand(w.wrapping_sub(&Self::T::one()))).into());
-		left.bitor(right)
+		let y = y_.rem(w);
+		x.rotate_left(y.try_into().unwrap())
 	}
 
-	fn rotr(x : Self::T, y : Self::T) -> Self::T
-	where Self::T : Integer +
-		  BitOr<Output = Self::T> +
-		  BitXor<Output = Self::T> +
-		  BitAnd<Output = Self::T> +
-		  Shl<Output = Self::T> +
-		  Shr<Output = Self::T> +
-		  From<u32> +
-		  Into<u32> +
-		  WrappingShl +
-		  WrappingShr +
-		  WrappingSub +
-		  Copy
+	/// See [Note 1]
+	fn rotr(x : Self::T, y_ : Self::T) -> Self::T
+	where Self::T : PrimInt +
+		  TryFrom<u32> +
+		  TryInto<u32>,
+		  <<Self as RC5Word>::T as TryFrom<u32>>::Error: Debug,
+		  <<Self as RC5Word>::T as TryInto<u32>>::Error: Debug
 	{
-		let w : Self::T = Self::T::from(Self::get_size_in_bits());
-		let left = x.wrapping_shr(y.bitand(w.wrapping_sub(&Self::T::one())).into());
-		let right = x.wrapping_shl((w.wrapping_sub(&y.bitand(w.wrapping_sub(&Self::T::one())))).into());
-		left.bitor(right)
+	let w = Self::T::try_from(Self::get_size_in_bits()).unwrap();
+
+	let y = y_.rem(w);
+	x.rotate_right(y.try_into().unwrap())
+	}
+
+}
+
+impl RC5Word for u16 {
+	type T = u16;
+
+	fn get_size_in_bits() -> WordSize {
+		u16::BITS
+	}
+
+	fn P() -> u16 {
+		0xb7e1
+	}
+
+	fn Q() -> u16 {
+		0x9e37
 	}
 }
 
@@ -97,22 +113,6 @@ impl RC5Word for u32 {
 
 	fn Q() -> u32 {
 		0x9e3779b9
-	}
-}
-
-impl RC5Word for u16 {
-	type T = u16;
-
-	fn get_size_in_bits() -> WordSize {
-		u16::BITS
-	}
-
-	fn P() -> u16 {
-		0xb7e1
-	}
-
-	fn Q() -> u16 {
-		0x9e37
 	}
 }
 
@@ -153,9 +153,9 @@ pub struct RC5 {
 impl RC5 {
 	pub fn create_rc5<T : RC5Word>(rounds : NumberOfRounds, key_size : KeyLength) -> Result<RC5, RC5Error> {
 
-		if rounds < 0 || rounds > MAX_ALLOWABLE_ROUNDS {
+		if rounds > MAX_ALLOWABLE_ROUNDS {
 			return Err(RC5Error::InvalidNumberOfRounds);
-		} else if key_size < 0 || key_size > MAX_ALLOWABLE_KEY_LENGTH {
+		} else if key_size > MAX_ALLOWABLE_KEY_LENGTH {
 			return Err(RC5Error::InvalidKeyLength);
 		}
 
@@ -170,51 +170,62 @@ impl RC5 {
 	}
 
 	pub fn setup_rc5<W>(&self, key: Vec<u8>) -> Result<Vec<W>, RC5Error>
-	where W : Copy +
-			  RC5Word<T = W> +
+	where W : RC5Word<T = W> +
 			  Integer +
-			  From<u32> +
-			  Shl<Output = W> +
-			  BitOr<Output = W> +
-			  BitAnd<Output = W> +
-			  BitXor<Output = W> +
-			  WrappingSub +
 			  WrappingAdd +
+			  Add<Output = W> +
 			  WrappingShl +
-			  WrappingShr +
-			  Into<u32> +
-			  Shr<Output = W> {
-		let c : usize =  max(1, div_ceil(8 * self.key_size, self.word_size)) as usize;
-		let u : usize = self.word_size as usize / 8;
-		let mut L  : Vec<W> = vec![W::from(0); c];
-		let t : usize = 2 * (self.rounds as usize + 1);
-		let mut S : Vec<W> = vec![W::from(0); t];
-
-		L[c-1] = W::from(0);
-		for i in (0 .. self.key_size as usize - 1).rev() {
-			L[i / u] = L[i/u] << W::from(8) + W::from(key[i].into());
+			  PrimInt +
+			  From<u8> +
+			  TryFrom<u32> +
+			  TryInto<u32>,
+			  <W as TryFrom<u32>>::Error: Debug,
+			  <W as TryInto<u32>>::Error: Debug {
+		if self.key_size != key.len() {
+			return Err(RC5Error::InvalidKeyLength);
 		}
+
+		let c : usize =  max(1, div_ceil(8 * self.key_size, self.word_size as usize)) as usize;
+		let u : usize = self.word_size as usize / 8;
+		let mut L  : Vec<W> = vec![W::zero(); c];
+		let t : usize = 2 * (self.rounds as usize + 1);
+		let mut S : Vec<W> = vec![W::zero(); t];
+
+		L[c-1] = W::zero();
+		for i in (0 ..= self.key_size as usize - 1).rev() {
+			let two = W::one() + W::one();
+			let eight = two * two * two;
+			// There seems to be a typo in the paper: in the pseudocode <<< is used
+			// no signify rotation, but in the implementation << is used instead.
+			// However, the following line also works.
+			//L[i / u] = L[i / u].wrapping_shl(8).wrapping_add(&From::from(key[i]));
+			L[i / u] = W::rotl(L[i / u], eight).wrapping_add(&From::from(key[i]));
+		}
+
+		// The L vector needs to have c as its length when it is initialized.
+		// If it does not, that is a problem, and execution must halt.
 		if L.len() != c {
 			return Err(RC5Error::InvalidLVectorLen);
 		}
 
 		S[0] = W::P();
-		for i in 1 .. t-1 {
+		for i in 1 ..= t - 1 {
 			S[i] = S[i-1].wrapping_add(&W::Q());
 		}
+		// Same for the S vector here.
 		if S.len() != t {
 			return Err(RC5Error::InvalidSVectorLen);
 		}
 
-		let mut A : W = W::from(0);
-		let mut B : W = W::from(0);
+		let mut A : W = W::zero();
+		let mut B : W = W::zero();
 
 		let mut i : usize = 0;
 		let mut j : usize = 0;
-		let mut k : usize = 0;
 
-		while k < 3 * max(t, c) {
-			S[i] = W::rotl(S[i].wrapping_add(&A.wrapping_add(&B)), W::from(3));
+		let three = W::one() + W::one() + W::one();
+		for _ in 1 ..= 3 * max(t, c) {
+			S[i] = W::rotl(S[i].wrapping_add(&A.wrapping_add(&B)), three );
 			A = S[i];
 
 			L[j] = W::rotl(L[j].wrapping_add(&A.wrapping_add(&B)), A.wrapping_add(&B));
@@ -222,27 +233,77 @@ impl RC5 {
 
 			i = (i + 1) % t;
 			j = (j + 1) % c;
-			k += 1;
 		}
+
+		println!("b: {0}; c: {1}; u: {2}; t: {3}", self.key_size, c, u, t);
 
 		Ok(S)
 	}
 
+	/// This function should return a cipher text for a given key and plaintext
+	fn encode_block<W>(&self, plaintext : &[W], key_table : &[W]) -> Vec<W>
+	where W : RC5Word<T = W> +
+		  WrappingAdd +
+		  PrimInt +
+		  BitXor +
+		  TryFrom<u32> +
+		  TryInto<u32> +
+		  Copy,
+		  <W as TryFrom<u32>>::Error: Debug,
+		  <W as TryInto<u32>>::Error: Debug
+	{
+		let mut cyphertext = vec![W::zero(); 2];
+		let mut A : W = plaintext[0] + key_table[0];
+		let mut B : W = plaintext[1] + key_table[1];
+
+		for i in 1 ..= self.rounds as usize
+		{
+			A = W::rotl(A.bitxor(B), B).wrapping_add(&key_table[2 * i]);
+			B = W::rotl(B.bitxor(A), A).wrapping_add(&key_table[2 * i + 1]);
+		}
+
+		cyphertext[0] = A;
+		cyphertext[1] = B;
+
+		cyphertext
+	}
+
+ 	/// This function should return a plaintext for a given key and ciphertext
+	fn decode_block<W>(&self, cyphertext : &[W], key_table : &[W]) -> Vec<W>
+	where W : RC5Word<T = W> +
+		  WrappingSub +
+		  PrimInt +
+		  BitXor +
+		  TryFrom<u32> +
+		  TryInto<u32> +
+		  Copy,
+		  <W as TryFrom<u32>>::Error: Debug,
+		  <W as TryInto<u32>>::Error: Debug
+	{
+		let mut plaintext = vec![W::zero(); 2];
+		let mut B : W = cyphertext[1];
+		let mut A : W = cyphertext[0];
+
+		for i in (1 ..= self.rounds as usize).rev()
+		{
+			B = W::rotr(B.wrapping_sub(&key_table[2 * i + 1]), A).bitxor(A);
+			A = W::rotr(A.wrapping_sub(&key_table[2 * i]), B).bitxor(B);
+		}
+
+		plaintext[1] = B - key_table[1];
+		plaintext[0] = A - key_table[0];
+
+		plaintext
+	}
+
+
 }
 
-/*
-* This function should return a cipher text for a given key and plaintext
-*
-*/
  fn encode(key: Vec<u8>, plaintext: Vec<u8>) -> Vec<u8> {
 	let mut ciphertext = Vec::new();
 	ciphertext
 }
 
-/*
- * This function should return a plaintext for a given key and ciphertext
- *
- */
 fn decode(key: Vec<u8>, ciphertext: Vec<u8>) -> Vec<u8> {
 	let mut plaintext = Vec::new();
 	plaintext
@@ -254,11 +315,20 @@ mod tests {
 
     #[test]
     fn encode_a() {
-    	let key = vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F];
-    	let pt  = vec![0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77];
-    	let ct  = vec![0x2D, 0xDC, 0x14, 0x9B, 0xCF, 0x08, 0x8B, 0x9E];
-    	let res = encode(key, pt);
-    	assert!(&ct[..] == &res[..]);
+		let rc5_instance = RC5::create_rc5::<u32>(12, 16).unwrap();
+
+		let key = vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F];
+		let s = rc5_instance.setup_rc5::<u32>(key).unwrap();
+
+		let pt  = vec![0x00, 0x11];
+
+		let ct = rc5_instance.encode_block(&pt, &s);
+		let pt1 = rc5_instance.decode_block(&ct, &s);
+
+		println!("pt: {:02X?}", pt);
+		println!("ct: {:02X?}", ct);
+		println!("new pt: {:02X?}", pt1);
+    	//assert!(&ct[..] == &res[..]);
     }
 
     #[test]

@@ -12,4 +12,6 @@ fn main() {
 	let s = rc5_instance.setup_rc5::<u32>(key).unwrap();
 	println!("{:02X?}", s);
 	println!("{0}", s.len());
+
+	println!("---");
 }
