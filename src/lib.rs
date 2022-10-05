@@ -1,6 +1,6 @@
 use std::{ops::{Rem, Add, BitXor}, cmp::max, convert::{TryFrom, TryInto}, fmt::Debug};
 use num::{Integer, PrimInt, Zero};
-use num_traits::{WrappingAdd, WrappingShl, WrappingSub};
+use num_traits::{WrappingAdd, WrappingSub};
 use num_integer::div_ceil;
 
 type WordSize = u32;
@@ -18,10 +18,6 @@ type KeyLength = usize;
  * Maximum allowable size of key in bytes, by default the paper advised it to be 255.
  */
 pub const MAX_ALLOWABLE_KEY_LENGTH : KeyLength = 255;
-
-type KeyTableSize = u32;
-
-type BlockLength = u32;
 
 #[derive(Debug)]
 pub enum RC5Error {
@@ -177,12 +173,6 @@ pub struct RC5 {
 	word_size : WordSize,
 	rounds : NumberOfRounds,
 	key_size : KeyLength,
-
-	key_table_size : KeyTableSize,
-
-	/// RC5 is a block cypher, so it can only encrypt blocks of fixed size at a time - this field
-	/// denotes its length.
-	block_length : BlockLength
 }
 
 impl RC5 {
@@ -199,23 +189,20 @@ impl RC5 {
 			word_size : w,
 			rounds,
 			key_size,
-			key_table_size : 2 * rounds + 1,
-			block_length : 2 * w
 		})
 	}
 
 	pub fn setup_rc5<W>(&self, key: Vec<u8>) -> Result<Vec<W>, RC5Error>
 	where W : RC5Word<T = W> +
-			  Integer +
 			  WrappingAdd +
 			  Add<Output = W> +
-			  WrappingShl +
 			  PrimInt +
 			  From<u8> +
 			  TryFrom<u32> +
 			  TryInto<u32>,
 			  <W as TryFrom<u32>>::Error: Debug,
-			  <W as TryInto<u32>>::Error: Debug {
+			  <W as TryInto<u32>>::Error: Debug
+	{
 		if self.key_size != key.len() {
 			return Err(RC5Error::InvalidKeyLength);
 		}
@@ -391,107 +378,88 @@ impl RC5 {
 
 }
 
-fn decode(key: Vec<u8>, ciphertext: Vec<u8>) -> Vec<u8> {
-	let mut plaintext = Vec::new();
-	plaintext
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
 
-	#[test]
-	fn encode_8() {
-		let rc5_instance = RC5::create_rc5::<u8>(12, 16).unwrap();
+	fn encode_decode_test<W>(key : Vec<u8>, pt : Vec<W>, res_ct : Vec<W>, rounds : u32, key_size : usize)
+	where W : RC5Word<T = W> +
+		  WrappingAdd +
+		  WrappingSub +
+		  PrimInt +
+		  BitXor +
+		  From<u8> +
+		  TryFrom<u32> +
+		  TryInto<u32> +
+		  Copy,
+		  <W as TryFrom<u32>>::Error: Debug,
+		  <W as TryInto<u32>>::Error: Debug
+	{
+		let rc5_instance = RC5::create_rc5::<W>(rounds, key_size).unwrap();
+		let s = rc5_instance.setup_rc5::<W>(key).unwrap();
 
-		let key = vec![0x2B, 0xD6, 0x45, 0x9F, 0x82, 0xC5, 0xB3, 0x00, 0x95, 0x2C, 0x49, 0x10, 0x48, 0x81, 0xFF, 0x48];
-		let s = rc5_instance.setup_rc5::<u8>(key).unwrap();
-
-		let pt  = vec![0xEA, 0x02, 0x47, 0x14, 0xAD, 0x5C, 0x4D, 0x84];
 		let ct = rc5_instance.encode(&pt, &s).unwrap();
 
-		let res : Vec<u8> = vec![0x00, 0x89, 0xA5, 0x0C, 0x08, 0x89, 0x0E, 0x9F];
-		let res2 = rc5_instance.decode(&ct, &s).unwrap();
+		let res_pt = rc5_instance.decode(&ct, &s).unwrap();
 
-		assert!(&ct[..] == &res[..]);
-		assert!(&pt[..] == &res2[..]);
-    }
+		assert!(&ct[..] == &res_ct[..]);
+		assert!(&pt[..] == &res_pt[..]);
+	}
+
+	fn encode_decode_test_16_12<W>(key : Vec<u8>, pt : Vec<W>, res_ct : Vec<W>)
+	where W : RC5Word<T = W> +
+		  WrappingAdd +
+		  WrappingSub +
+		  PrimInt +
+		  BitXor +
+		  From<u8> +
+		  TryFrom<u32> +
+		  TryInto<u32> +
+		  Copy,
+		  <W as TryFrom<u32>>::Error: Debug,
+		  <W as TryInto<u32>>::Error: Debug
+	{
+		encode_decode_test(key, pt, res_ct, 12, 16)
+	}
+
+	#[test]
+	fn encode_8() {
+		let key = vec![0x2B, 0xD6, 0x45, 0x9F, 0x82, 0xC5, 0xB3, 0x00, 0x95, 0x2C, 0x49, 0x10, 0x48, 0x81, 0xFF, 0x48];
+		let pt  = vec![0xEA, 0x02, 0x47, 0x14, 0xAD, 0x5C, 0x4D, 0x84];
+		let ct : Vec<u8> = vec![0x00, 0x89, 0xA5, 0x0C, 0x08, 0x89, 0x0E, 0x9F];
+		encode_decode_test_16_12(key, pt, ct)
+	}
 	
 	#[test]
 	fn encode_16() {
-		let rc5_instance = RC5::create_rc5::<u16>(12, 16).unwrap();
-
 		let key = vec![0x2B, 0xD6, 0x45, 0x9F, 0x82, 0xC5, 0xB3, 0x00, 0x95, 0x2C, 0x49, 0x10, 0x48, 0x81, 0xFF, 0x48];
-		let s = rc5_instance.setup_rc5::<u16>(key).unwrap();
-
 		let pt  = vec![0xEA, 0x02, 0x47, 0x14, 0xAD, 0x5C, 0x4D, 0x84];
-		let ct = rc5_instance.encode(&pt, &s).unwrap();
-		
-		//let res : Vec<u16> = vec![0x8B59, 0x3948, 0xAA2F, 0x8307, 0xC0F5, 0xABF4, 0x2078, 0x1D7F];
-		//let res2 = rc5_instance.decode(&ct, &s).unwrap();
-
-		println!("ct: {:02X?}", ct);
-		//println!("res: {:02X?}", res);
-		//println!("res2: {:02X?}", res2);
-		//assert!(&ct[..] == &res[..]);
-		//assert!(&pt[..] == &res2[..]);
-    }
+		let ct : Vec<u16> = vec![0x8B59, 0x3948, 0xAA2F, 0x8307, 0xC0F5, 0xABF4, 0x2078, 0x1D7F];
+		encode_decode_test_16_12(key, pt, ct);
+	}
 
     #[test]
     fn encode_32() {
-		let rc5_instance = RC5::create_rc5::<u32>(12, 16).unwrap();
-
 		let key = vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F];
-		let s = rc5_instance.setup_rc5::<u32>(key).unwrap();
-
 		let pt  = vec![0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77];
-		let ct = rc5_instance.encode(&pt, &s).unwrap();
-		
-		let res : Vec<u32> = vec![0x92BF7F69, 0xD6A03212, 0x9D61F96E, 0x9A231988, 0x93420E37, 0x1F4C830F, 0x78194BB3, 0x78B09E02];
-		let res2 = rc5_instance.decode(&ct, &s).unwrap();
-
-    	assert!(&ct[..] == &res[..]);
-		assert!(&pt[..] == &res2[..]);
-    }
+		let ct : Vec<u32> = vec![0x92BF7F69, 0xD6A03212, 0x9D61F96E, 0x9A231988, 0x93420E37, 0x1F4C830F, 0x78194BB3, 0x78B09E02];
+		encode_decode_test_16_12(key, pt, ct);
+	}
 
 	#[test]
     fn encode_64() {
-		let rc5_instance = RC5::create_rc5::<u64>(12, 16).unwrap();
-
 		let key = vec![0x2B, 0xD6, 0x45, 0x9F, 0x82, 0xC5, 0xB3, 0x00, 0x95, 0x2C, 0x49, 0x10, 0x48, 0x81, 0xFF, 0x48];
-		let s = rc5_instance.setup_rc5::<u64>(key).unwrap();
-
 		let pt  = vec![0xEA, 0x02, 0x47, 0x14, 0xAD, 0x5C, 0x4D, 0x84];
-		let ct = rc5_instance.encode(&pt, &s).unwrap();
-		
-		let res : Vec<u64> = vec![0xBB0497B712B4E725, 0x37992017930E3A36, 0xE36E715550078AD3, 0x1C956B32BCB63824, 0x2B3A8E4AF93600F7, 0x52D48295E9F6D4D0, 0xBB65F6F5FC1CE043, 0xC453962B6C91D01E];
-		let res2 = rc5_instance.decode(&ct, &s).unwrap();
-
-		println!("ct: {:02X?}", ct);
-		println!("res: {:02X?}", res);
-		println!("res2: {:02X?}", res2);
-		assert!(&ct[..] == &res[..]);
-		assert!(&pt[..] == &res2[..]);
-    }
+		let ct : Vec<u64> = vec![0xBB0497B712B4E725, 0x37992017930E3A36, 0xE36E715550078AD3, 0x1C956B32BCB63824, 0x2B3A8E4AF93600F7, 0x52D48295E9F6D4D0, 0xBB65F6F5FC1CE043, 0xC453962B6C91D01E];
+		encode_decode_test_16_12(key, pt, ct);
+	}
 
 	#[test]
     fn encode_128() {
-		let rc5_instance = RC5::create_rc5::<u128>(12, 16).unwrap();
-
 		let key = vec![0x2B, 0xD6, 0x45, 0x9F, 0x82, 0xC5, 0xB3, 0x00, 0x95, 0x2C, 0x49, 0x10, 0x48, 0x81, 0xFF, 0x48];
-		let s = rc5_instance.setup_rc5::<u128>(key).unwrap();
-
 		let pt  = vec![0xEA, 0x02, 0x47, 0x14, 0xAD, 0x5C, 0x4D, 0x84];
-		let ct = rc5_instance.encode(&pt, &s).unwrap();
-		
-		let res : Vec<u128> = vec![0xF5FB70072DB9D97B0148D85D973E7A6B, 0x247DDBDF9F5E89393CA6772C82B244CC, 0xEFD0F78D74A4EF684D5A86E8DB44EC80, 0xA08E96515249009F1BD13588DA68BC47, 0x896E491ED22D1CD1F98D5DDFC8C5A806, 0xAB482F1650A83132B742882D068A7DCD, 0x15A3B452E5D350098C0673191546965A, 0x9C4C21D80E8D7474C7957E150C002F07];
-		let res2 = rc5_instance.decode(&ct, &s).unwrap();
-
-		/*println!("ct: {:02X?}", ct);
-		println!("res: {:02X?}", res);
-		println!("res2: {:02X?}", res2);*/
-		assert!(&ct[..] == &res[..]);
-		assert!(&pt[..] == &res2[..]);
-    }
+		let ct : Vec<u128> = vec![0xF5FB70072DB9D97B0148D85D973E7A6B, 0x247DDBDF9F5E89393CA6772C82B244CC, 0xEFD0F78D74A4EF684D5A86E8DB44EC80, 0xA08E96515249009F1BD13588DA68BC47, 0x896E491ED22D1CD1F98D5DDFC8C5A806, 0xAB482F1650A83132B742882D068A7DCD, 0x15A3B452E5D350098C0673191546965A, 0x9C4C21D80E8D7474C7957E150C002F07];
+		encode_decode_test_16_12(key, pt, ct);
+	}
 
 }

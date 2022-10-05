@@ -5,9 +5,6 @@ use rug::{float::{Round, Constant}, Float, Integer};
 
 fn main() {
 	env::set_var("RUST_BACKTRACE", "1");
-	println!("---");
-
-	let pi = Float::with_val(53, Constant::Pi);
 
 	let f = Float::with_val(200, 1);
 	let e = f.exp();
