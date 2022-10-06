@@ -1,16 +1,18 @@
+use rug::{float::Round, Float, Integer};
 use std::{env, collections::HashMap};
-use rc5_test::RC5;
 
-use rug::{float::{Round, Constant}, Float, Integer};
-
+/// The code here is used to calculate the magic constants P and Q for varying
+/// word sizes.
+/// It's been replicated in `lib.rs`, but kept here as well since it served as
+/// a way to experiment with closures and their semantics in Rust.
 fn main() {
 	env::set_var("RUST_BACKTRACE", "1");
 
 	let f = Float::with_val(200, 1);
 	let e = f.exp();
 
-	// This is necessary to calculate the magic constants P and Q: round
-	// a Float to the nearest odd Integer.
+	// This is necessary to calculate the magic constants P and Q.
+	// Closure to round a rug::Float to the nearest odd rug::Integer.
 	let round_to_nearest_odd = |fl : Float| {
 		let low = fl.to_integer_round(Round::Down).map(|opt| { opt.0 }).unwrap_or(Integer::new());
 		let high = fl.to_integer_round(Round::Up).map(|opt| { opt.0 }).unwrap_or(Integer::new());

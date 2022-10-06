@@ -3,6 +3,106 @@ use num::{Integer, PrimInt, Zero};
 use num_traits::{WrappingAdd, WrappingSub};
 use num_integer::div_ceil;
 
+/// This module serves to expose a simple API to calculate the magic constants P and Q
+/// for various word sizes, using the `rug` crate for arbitrary-precision floating
+/// point calculations.
+///
+/// The code in `main.rs` is enough to print the constants onto STDOUT, so the code 
+/// below serves as
+/// * a reminder on how to use modules
+/// * more experiments on closures, both returning them from and passing them to functions
+/// * practice to learn how to define and initialize static variables using `lazy_static`
+pub mod quick_maths {
+	use rug::{float::Round, Float, Integer};
+	use std::collections::HashMap;
+	use lazy_static::lazy_static;
+
+	lazy_static!{
+		pub static ref QS : HashMap<u32, Integer> = {
+			let mut h = HashMap::new();
+			for i in (3 ..= 7).map(|n| {2u32.pow(n)}) {
+				h.insert(i, q_w_prec_200(i));	
+			}
+			h
+		};
+		pub static ref PS : HashMap<u32, Integer> = {
+			let mut h = HashMap::new();
+			for i in (3 ..= 7).map(|n| {2u32.pow(n)}) {
+				h.insert(i, p_w_prec_200(i));	
+			}
+			h
+		};
+	}
+
+	fn round_to_nearest_odd(fl : Float) -> impl Fn() -> Integer {
+		let round_to_nearest_odd = move || {
+			let low = fl.to_integer_round(Round::Down).map(|opt| { opt.0 }).unwrap_or(Integer::new());
+			let high = fl.to_integer_round(Round::Up).map(|opt| { opt.0 }).unwrap_or(Integer::new());
+			let nearest = fl.to_integer_round(Round::Nearest).map(|opt| { opt.0 }).unwrap_or(Integer::new());
+	
+			if nearest.is_odd() {
+				nearest
+			// If the nearest number is not odd, it must be even, so the furthest must be odd.
+			// At this point it is unknown which is the furthest, whether the floor `low` or the
+			// ceiling `high`.
+			} else if high == nearest {
+				low
+			} else {
+				high
+			}
+		};
+		round_to_nearest_odd
+	}
+
+	fn p_w_wrapper<F>(f : F, w : u32, prec : u32) -> Integer
+	where F : Fn(u32, u32) -> Integer
+	{
+		f(w, prec)
+	}
+
+	fn p_w(w : u32, prec : u32) -> Integer
+	{
+		let p_w = |w : u32, prec : u32| {
+			let f = Float::with_val(200, 1);
+			let e = f.exp();
+	
+			// This clone() is necessary because of closure semantics.
+			// Were this not cloned, then p_w would not be callable more than
+			// once, as rug::Float does not implement Copy.
+			let f1 = e - 2;
+	
+			let pow = Float::i_pow_u(2, w);
+			let f2 = Float::with_val(prec, pow);
+	
+			round_to_nearest_odd(f1 * f2)()
+		};
+
+		p_w_wrapper(p_w, w, prec)
+	}
+
+	pub fn p_w_prec_200(w : u32) -> Integer
+	{
+		p_w(w, 200)
+	}
+
+	fn q_w (w : u32, prec : u32) -> Integer
+	{
+		let sqrt5 = Float::with_val(prec, 5.0).sqrt();
+		let phi = (1 + sqrt5) / 2;
+		let f1 = phi - 1;
+
+		let pow = Float::i_pow_u(2, w);
+		let f2 = Float::with_val(prec, pow);
+
+		round_to_nearest_odd(f1 * f2)()
+	}
+
+	pub fn q_w_prec_200(w : u32) -> Integer
+	{
+		q_w(w, 200)
+	}
+}
+
 type WordSize = u32;
 
 type NumberOfRounds = u32;
@@ -21,11 +121,15 @@ pub const MAX_ALLOWABLE_KEY_LENGTH : KeyLength = 255;
 
 #[derive(Debug)]
 pub enum RC5Error {
+	// Errors that occur during creating on an RC5 instance
 	InvalidNumberOfRounds,
 	InvalidKeyLength,
+
+	// Errors that occur during setup
 	InvalidLVectorLen,
 	InvalidSVectorLen,
 
+	// Errors that may occur during encryption/decryption
 	ImproperlyPaddedPlaintext,
 	ImproperlyPaddedCyphertext
 }
@@ -90,8 +194,12 @@ impl RC5Word for u8 {
 		u8::BITS
 	}
 
+	// Showcasing use of the P static variable to get a magic constant.
 	fn P() -> u8 {
-		0xb7
+		quick_maths::PS
+			.get(&u8::get_size_in_bits())
+			.map(|i| {i.to_u8_wrapping()})
+			.unwrap_or(0xb7)
 	}
 
 	fn Q() -> u8 {
@@ -118,7 +226,7 @@ impl RC5Word for u16 {
 impl RC5Word for u32 {
 	type T = u32;
 
-	fn get_size_in_bits() -> WordSize{
+	fn get_size_in_bits() -> WordSize {
 		u32::BITS
 	}
 
@@ -166,7 +274,7 @@ impl RC5Word for u128 {
 /// Structure that represents an RC5 configuration to be used to encrypt/decrypt data
 /// with a certain private key.
 ///
-/// They key is not part of the struct, it is meant to be passed as a parameter to the
+/// The key is not part of the struct, it is meant to be passed as a parameter to the
 /// relevant methods - this means that the symbol table S is recomputed every invocation.
 #[derive(Debug)]
 pub struct RC5 {
@@ -176,6 +284,8 @@ pub struct RC5 {
 }
 
 impl RC5 {
+	/// Create a valid RC5 instance. Required: number of rounds this instance will execute
+	/// the encryption/decryption routine, and length of the key to be used in the process.
 	pub fn create_rc5<T : RC5Word>(rounds : NumberOfRounds, key_size : KeyLength) -> Result<RC5, RC5Error> {
 
 		if rounds > MAX_ALLOWABLE_ROUNDS {
@@ -213,7 +323,7 @@ impl RC5 {
 		let t : usize = 2 * (self.rounds as usize + 1);
 		let mut S : Vec<W> = vec![W::zero(); t];
 
-		L[c-1] = W::zero();
+		L[c - 1] = W::zero();
 		for i in (0 ..= self.key_size as usize - 1).rev() {
 			let two = W::one() + W::one();
 			let eight = two * two * two;
@@ -260,7 +370,15 @@ impl RC5 {
 		Ok(S)
 	}
 
-	/// This function should return a cipher text for a given key and plaintext
+	/// This function should return a cipher text for a given key and plaintext.
+	/// It does so one RC5 block at a time. Each block is composed of `2w` bits,
+	/// where `w` is the length, in bits, of the word type chosen to run RC5 with.
+	///
+	/// [Note 2]
+	/// The plaintext vector is assumed to have length 2; since this function is
+	/// not public and it is the responsibility of its caller - `encode` - to
+	/// only pass it pairs of words and check for the size of the key table,
+	/// that is not done here.
 	fn encode_block<W>(&self, plaintext : &[W], key_table : &[W]) -> Vec<W>
 	where W : RC5Word<T = W> +
 		  WrappingAdd +
@@ -319,7 +437,16 @@ impl RC5 {
 		Ok(cyphertext)
 	}
 
- 	/// This function should return a plaintext for a given key and ciphertext
+	/// This function should return the plaintext generated by a given key on some
+	/// cyphertext.
+	/// It does so one RC5 block at a time. Each block is composed of `2w` bits,
+	/// where `w` is the length, in bits, of the word type chosen to run RC5 with.
+	///
+	/// [Note 2]
+	/// The plaintext vector is assumed to have length 2; since this function is
+	/// not public and it is the responsibility of its caller - `decode` - to
+	/// only pass it pairs of words and check for the size of the key table,
+	/// that is not done here.
 	fn decode_block<W>(&self, cyphertext : &[W], key_table : &[W]) -> Vec<W>
 	where W : RC5Word<T = W> +
 		  WrappingSub +
@@ -368,6 +495,9 @@ impl RC5 {
 			return Ok(plaintext);
 		}
 
+		// The plaintext's length has already been checked not to be odd, or zero.
+		// It is therefore safe to call `decode_block` here. A similar reasoning applies
+		// to `encode_block`, see [Note 2].
 		for i in (0 .. plaintext.len()).step_by(2) {
 			plaintext[i ..= i + 1].copy_from_slice(&self.decode_block(&cyphertext[i ..= i + 1], key_table));
 		}
@@ -449,9 +579,9 @@ mod tests {
 	#[test]
     fn encode_64() {
 		let key = vec![0x2B, 0xD6, 0x45, 0x9F, 0x82, 0xC5, 0xB3, 0x00, 0x95, 0x2C, 0x49, 0x10, 0x48, 0x81, 0xFF, 0x48];
-		let pt  = vec![0xEA, 0x02, 0x47, 0x14, 0xAD, 0x5C, 0x4D, 0x84];
-		let ct : Vec<u64> = vec![0xBB0497B712B4E725, 0x37992017930E3A36, 0xE36E715550078AD3, 0x1C956B32BCB63824, 0x2B3A8E4AF93600F7, 0x52D48295E9F6D4D0, 0xBB65F6F5FC1CE043, 0xC453962B6C91D01E];
-		encode_decode_test_16_12(key, pt, ct);
+		let pt : Vec<u64>  = vec![0xEA, 0x02, 0x47, 0x14, 0xAD, 0x5C, 0x4D, 0x84];
+		let res_ct : Vec<u64> = vec![0xBB0497B712B4E725, 0x37992017930E3A36, 0xE36E715550078AD3, 0x1C956B32BCB63824, 0x2B3A8E4AF93600F7, 0x52D48295E9F6D4D0, 0xBB65F6F5FC1CE043, 0xC453962B6C91D01E];
+		encode_decode_test_16_12(key, pt, res_ct);
 	}
 
 	#[test]
