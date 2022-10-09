@@ -65,6 +65,7 @@ fn main() {
 
 	for i in (3 ..= 7).map(|n| {2u32.pow(n)}) {
 		println!(
+			// Some experiments with `println!` formatting.
 			"p_{:03}: {:032} ---- q_{:03}: {:032}",
 			i,
 			ps.get(&i).unwrap().to_string_radix(16),

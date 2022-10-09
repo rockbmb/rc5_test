@@ -194,7 +194,8 @@ impl RC5Word for u8 {
 		u8::BITS
 	}
 
-	// Showcasing use of the P static variable to get a magic constant.
+	// Showcasing use of the P static variable, a hashmap populated lazily at run-time,
+	// to get the P magic constant for the 8-bit word type.
 	fn P() -> u8 {
 		quick_maths::PS
 			.get(&u8::get_size_in_bits())
@@ -286,15 +287,30 @@ pub struct RC5 {
 impl RC5 {
 	/// Create a valid RC5 instance. Required: number of rounds this instance will execute
 	/// the encryption/decryption routine, and length of the key to be used in the process.
-	pub fn create_rc5<T : RC5Word>(rounds : NumberOfRounds, key_size : KeyLength) -> Result<RC5, RC5Error> {
-
+	///
+	/// This method used rudimentary type-level programming to parametrize the word type W
+	/// using types and not concrete data inside the `struct`.
+	///
+	/// This means that after creating an instance with a given word type, it can only be
+	/// used with that word type and no other:
+	///
+	/// ```
+	/// use rc5_test::RC5;
+	///
+	/// let key = vec![0x2B, 0xD6, 0x45, 0x9F, 0x82, 0xC5, 0xB3, 0x00, 0x95, 0x2C, 0x49, 0x10, 0x48, 0x81, 0xFF, 0x48];
+	/// let rc5_instance = RC5::create_rc5::<u16>(12, 16).unwrap();
+	/// let s = rc5_instance.setup_rc5::<u8>(key).unwrap();
+	/// ```
+	pub fn create_rc5<W>(rounds : NumberOfRounds, key_size : KeyLength) -> Result<RC5, RC5Error>
+	where W : RC5Word<T = W>
+	{
 		if rounds > MAX_ALLOWABLE_ROUNDS {
 			return Err(RC5Error::InvalidNumberOfRounds);
 		} else if key_size > MAX_ALLOWABLE_KEY_LENGTH {
 			return Err(RC5Error::InvalidKeyLength);
 		}
 
-		let w : WordSize = T::get_size_in_bits();
+		let w : WordSize = W::get_size_in_bits();
 		Ok(RC5 {
 			word_size : w,
 			rounds,
@@ -302,6 +318,8 @@ impl RC5 {
 		})
 	}
 
+	/// Given a particular RC5 instance and a private key, create the key table
+	/// (S in the paper) to be used in encryption/decryption.
 	pub fn setup_rc5<W>(&self, key: Vec<u8>) -> Result<Vec<W>, RC5Error>
 	where W : RC5Word<T = W> +
 			  WrappingAdd +
@@ -555,8 +573,9 @@ mod tests {
 	#[test]
 	fn encode_8() {
 		let key = vec![0x2B, 0xD6, 0x45, 0x9F, 0x82, 0xC5, 0xB3, 0x00, 0x95, 0x2C, 0x49, 0x10, 0x48, 0x81, 0xFF, 0x48];
-		let pt  = vec![0xEA, 0x02, 0x47, 0x14, 0xAD, 0x5C, 0x4D, 0x84];
-		let ct : Vec<u8> = vec![0x00, 0x89, 0xA5, 0x0C, 0x08, 0x89, 0x0E, 0x9F];
+		let pt : Vec<u16>  = vec![0xEA, 0x02, 0x47, 0x14, 0xAD, 0x5C, 0x4D, 0x84];
+		let ct : Vec<u16> = vec![0x00, 0x89, 0xA5, 0x0C, 0x08, 0x89, 0x0E, 0x9F];
+
 		encode_decode_test_16_12(key, pt, ct)
 	}
 	
