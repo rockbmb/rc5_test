@@ -1,4 +1,4 @@
-use std::{ops::{Rem, Add, BitXor}, cmp::max, convert::{TryFrom, TryInto}, fmt::Debug};
+use std::{ops::{Rem, Add, BitXor}, cmp::max, convert::{TryFrom, TryInto}, fmt::Debug, marker::PhantomData};
 use num::{Integer, PrimInt, Zero};
 use num_traits::{WrappingAdd, WrappingSub};
 use num_integer::div_ceil;
@@ -18,6 +18,10 @@ pub mod quick_maths {
 	use lazy_static::lazy_static;
 
 	lazy_static!{
+		/// This is a `Hashmap` that maps word sizes, in bits, to the corresponding
+		/// value of the `Q` constant for that word type e.g. `QS.get(128)` is
+		/// the value of `Q` for `u128`.
+		/// `PS` does the same for the `P` constant.
 		pub static ref QS : HashMap<u32, Integer> = {
 			let mut h = HashMap::new();
 			for i in (3 ..= 7).map(|n| {2u32.pow(n)}) {
@@ -39,7 +43,7 @@ pub mod quick_maths {
 			let low = fl.to_integer_round(Round::Down).map(|opt| { opt.0 }).unwrap_or(Integer::new());
 			let high = fl.to_integer_round(Round::Up).map(|opt| { opt.0 }).unwrap_or(Integer::new());
 			let nearest = fl.to_integer_round(Round::Nearest).map(|opt| { opt.0 }).unwrap_or(Integer::new());
-	
+
 			if nearest.is_odd() {
 				nearest
 			// If the nearest number is not odd, it must be even, so the furthest must be odd.
@@ -134,6 +138,32 @@ pub enum RC5Error {
 	ImproperlyPaddedCyphertext
 }
 
+/// The `RC5Word` trait serves to restrict which primitive word types can serve
+/// as plaintext/cyphertext for RC5.
+///
+/// Only data from types that implement this trait can be encrypted using this module.
+/// This means that using e.g. signed word types like `i32` that do not implement
+/// this trait will fail at compile-time.
+///
+/// [Note 3]
+/// The reason this trait relies on an associated type instead of generics is that
+/// generics would permit the same unsigned word type - e.g. `u32` - to offer more
+/// than one implementation, which in this context would not make sense.
+///
+/// This is unfortunate because with generics, one could add bounds to `T` in `RC5Word<T>`
+/// that, by describing what we'd need from `T`, e.g. `WrappingAdd + WrappingShl + ...`, would
+/// restrict implementations of this trait only to types that would make sense to use in RC5
+/// encryption e.g. `u16, u64`, and prevent the need to add complex bounds to every method;
+/// see `RC5::{encode, decode}`.
+///
+/// However, for now, it is not possible to add bounds to associated types - see
+/// [this](https://github.com/rust-lang/rust/issues/44265) - so they have to be
+/// present in methods in traits, and methods in `impl`s for `struct`s.
+/// This means each method can have only the bounds it requires, leading to different
+/// bounds on methods that all act on the same type.
+///
+/// Ultimately, since all of them require `RCWord`, that will not matter - this
+/// is what this trait is for.
 pub trait RC5Word
 {
 	type T;
@@ -278,30 +308,66 @@ impl RC5Word for u128 {
 /// The key is not part of the struct, it is meant to be passed as a parameter to the
 /// relevant methods - this means that the symbol table S is recomputed every invocation.
 #[derive(Debug)]
-pub struct RC5 {
+pub struct RC5<W> {
 	word_size : WordSize,
+	word_type : PhantomData<W>,
 	rounds : NumberOfRounds,
-	key_size : KeyLength,
+	key_size : KeyLength
 }
 
-impl RC5 {
+impl<W> RC5<W> {
 	/// Create a valid RC5 instance. Required: number of rounds this instance will execute
 	/// the encryption/decryption routine, and length of the key to be used in the process.
 	///
-	/// This method used rudimentary type-level programming to parametrize the word type W
-	/// using types and not concrete data inside the `struct`.
+	/// This method used rudimentary type-level programming to restrict the word types W
+	/// allowed to create an instance of the `RC5` struct.
 	///
 	/// This means that after creating an instance with a given word type, it can only be
-	/// used with that word type and no other:
+	/// used with that word type and no other. Examples follow.
+	/// 
+	/// The following should fail to compile:
 	///
-	/// ```
+	/// ```compile_fail
 	/// use rc5_test::RC5;
 	///
+	/// let rc5_instance : RC5<u32> = RC5::create_rc5(12, 16).unwrap();
 	/// let key = vec![0x2B, 0xD6, 0x45, 0x9F, 0x82, 0xC5, 0xB3, 0x00, 0x95, 0x2C, 0x49, 0x10, 0x48, 0x81, 0xFF, 0x48];
-	/// let rc5_instance = RC5::create_rc5::<u16>(12, 16).unwrap();
-	/// let s = rc5_instance.setup_rc5::<u8>(key).unwrap();
+	/// let s = rc5_instance.setup_rc5(key).unwrap();
+	///
+	/// let pt : Vec<u8>  = vec![0xEA, 0x02, 0x47, 0x14];
+	/// let ct = rc5_instance.encode(&pt, &s).unwrap();
 	/// ```
-	pub fn create_rc5<W>(rounds : NumberOfRounds, key_size : KeyLength) -> Result<RC5, RC5Error>
+	///
+	/// This fails because the RC5 instance was created for 32-bit words, but 8-bit plaintext
+	/// was passed to it.
+	///
+	/// In contrast, the following will work:
+	///
+	/// ```
+	/// # use rc5_test::RC5;
+	///
+	/// # let rc5_instance : RC5<u32> = RC5::create_rc5(12, 16).unwrap();
+	/// # let key = vec![0x2B, 0xD6, 0x45, 0x9F, 0x82, 0xC5, 0xB3, 0x00, 0x95, 0x2C, 0x49, 0x10, 0x48, 0x81, 0xFF, 0x48];
+	/// # let s = rc5_instance.setup_rc5(key).unwrap();
+	///
+	/// let pt2 : Vec<u32>  = vec![0xEA, 0x02, 0x47, 0x14];
+	/// let ct = rc5_instance.encode(&pt2, &s).unwrap();
+	/// ```
+	///
+	/// The plaintext's type annotation can be left out, and it'll be inferred to match
+	/// the RC5 instance's creation type:
+	///
+	/// ```
+	/// # use rc5_test::RC5;
+	///
+	/// # let rc5_instance : RC5<u32> = RC5::create_rc5(12, 16).unwrap();
+	/// # let key = vec![0x2B, 0xD6, 0x45, 0x9F, 0x82, 0xC5, 0xB3, 0x00, 0x95, 0x2C, 0x49, 0x10, 0x48, 0x81, 0xFF, 0x48];
+	/// # let s = rc5_instance.setup_rc5(key).unwrap();
+	///
+	/// let pt3 = vec![0xEA, 0x02, 0x47, 0x14];
+	/// let ct = rc5_instance.encode(&pt3, &s).unwrap();
+	/// ```
+	pub fn create_rc5(rounds : NumberOfRounds, key_size : KeyLength) -> Result<RC5<W>, RC5Error>
 	where W : RC5Word<T = W>
 	{
 		if rounds > MAX_ALLOWABLE_ROUNDS {
@@ -310,9 +376,11 @@ impl RC5 {
 			return Err(RC5Error::InvalidKeyLength);
 		}
 
-		let w : WordSize = W::get_size_in_bits();
+		let word_size : WordSize = W::get_size_in_bits();
+		let word_type : PhantomData<W> = PhantomData;
 		Ok(RC5 {
-			word_size : w,
+			word_size,
+			word_type,
 			rounds,
 			key_size,
 		})
@@ -320,7 +388,7 @@ impl RC5 {
 
 	/// Given a particular RC5 instance and a private key, create the key table
 	/// (S in the paper) to be used in encryption/decryption.
-	pub fn setup_rc5<W>(&self, key: Vec<u8>) -> Result<Vec<W>, RC5Error>
+	pub fn setup_rc5(&self, key: Vec<u8>) -> Result<Vec<W>, RC5Error>
 	where W : RC5Word<T = W> +
 			  WrappingAdd +
 			  Add<Output = W> +
@@ -352,7 +420,7 @@ impl RC5 {
 			L[i / u] = W::rotl(L[i / u], eight).wrapping_add(&From::from(key[i]));
 		}
 
-		// The L vector needs to have c as its length when it is initialized.
+		// The L vector needs to have c as its length after it has been initialized.
 		// If it does not, that is a problem, and execution must halt.
 		if L.len() != c {
 			return Err(RC5Error::InvalidLVectorLen);
@@ -397,7 +465,7 @@ impl RC5 {
 	/// not public and it is the responsibility of its caller - `encode` - to
 	/// only pass it pairs of words and check for the size of the key table,
 	/// that is not done here.
-	fn encode_block<W>(&self, plaintext : &[W], key_table : &[W]) -> Vec<W>
+	fn encode_block(&self, plaintext : &[W], key_table : &[W]) -> Vec<W>
 	where W : RC5Word<T = W> +
 		  WrappingAdd +
 		  PrimInt +
@@ -424,7 +492,7 @@ impl RC5 {
 		cyphertext
 	}
 
-	pub fn encode<W>(&self, plaintext : &[W], key_table : &[W]) -> Result<Vec<W>, RC5Error>
+	pub fn encode(&self, plaintext : &[W], key_table : &[W]) -> Result<Vec<W>, RC5Error>
 	where W : RC5Word<T = W> +
 		  WrappingAdd +
 		  PrimInt +
@@ -465,7 +533,7 @@ impl RC5 {
 	/// not public and it is the responsibility of its caller - `decode` - to
 	/// only pass it pairs of words and check for the size of the key table,
 	/// that is not done here.
-	fn decode_block<W>(&self, cyphertext : &[W], key_table : &[W]) -> Vec<W>
+	fn decode_block(&self, cyphertext : &[W], key_table : &[W]) -> Vec<W>
 	where W : RC5Word<T = W> +
 		  WrappingSub +
 		  PrimInt +
@@ -492,7 +560,8 @@ impl RC5 {
 		plaintext
 	}
 
-	pub fn decode<W>(&self, cyphertext : &[W], key_table : &[W]) -> Result<Vec<W>, RC5Error>
+	pub fn decode(&self, cyphertext : &[W], key_table : &[W]) -> Result<Vec<W>, RC5Error>
+	// See [Note 3] for the reason why these bounds differ from those in `RC5::encode`.
 	where W : RC5Word<T = W> +
 		  WrappingSub +
 		  PrimInt +
@@ -543,8 +612,8 @@ mod tests {
 		  <W as TryFrom<u32>>::Error: Debug,
 		  <W as TryInto<u32>>::Error: Debug
 	{
-		let rc5_instance = RC5::create_rc5::<W>(rounds, key_size).unwrap();
-		let s = rc5_instance.setup_rc5::<W>(key).unwrap();
+		let rc5_instance : RC5<W> = RC5::create_rc5(rounds, key_size).unwrap();
+		let s = rc5_instance.setup_rc5(key).unwrap();
 
 		let ct = rc5_instance.encode(&pt, &s).unwrap();
 
@@ -573,8 +642,8 @@ mod tests {
 	#[test]
 	fn encode_8() {
 		let key = vec![0x2B, 0xD6, 0x45, 0x9F, 0x82, 0xC5, 0xB3, 0x00, 0x95, 0x2C, 0x49, 0x10, 0x48, 0x81, 0xFF, 0x48];
-		let pt : Vec<u16>  = vec![0xEA, 0x02, 0x47, 0x14, 0xAD, 0x5C, 0x4D, 0x84];
-		let ct : Vec<u16> = vec![0x00, 0x89, 0xA5, 0x0C, 0x08, 0x89, 0x0E, 0x9F];
+		let pt : Vec<u8>  = vec![0xEA, 0x02, 0x47, 0x14, 0xAD, 0x5C, 0x4D, 0x84];
+		let ct : Vec<u8> = vec![0x00, 0x89, 0xA5, 0x0C, 0x08, 0x89, 0x0E, 0x9F];
 
 		encode_decode_test_16_12(key, pt, ct)
 	}
@@ -587,8 +656,8 @@ mod tests {
 		encode_decode_test_16_12(key, pt, ct);
 	}
 
-    #[test]
-    fn encode_32() {
+	#[test]
+	fn encode_32() {
 		let key = vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F];
 		let pt  = vec![0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77];
 		let ct : Vec<u32> = vec![0x92BF7F69, 0xD6A03212, 0x9D61F96E, 0x9A231988, 0x93420E37, 0x1F4C830F, 0x78194BB3, 0x78B09E02];
@@ -596,7 +665,7 @@ mod tests {
 	}
 
 	#[test]
-    fn encode_64() {
+	fn encode_64() {
 		let key = vec![0x2B, 0xD6, 0x45, 0x9F, 0x82, 0xC5, 0xB3, 0x00, 0x95, 0x2C, 0x49, 0x10, 0x48, 0x81, 0xFF, 0x48];
 		let pt : Vec<u64>  = vec![0xEA, 0x02, 0x47, 0x14, 0xAD, 0x5C, 0x4D, 0x84];
 		let res_ct : Vec<u64> = vec![0xBB0497B712B4E725, 0x37992017930E3A36, 0xE36E715550078AD3, 0x1C956B32BCB63824, 0x2B3A8E4AF93600F7, 0x52D48295E9F6D4D0, 0xBB65F6F5FC1CE043, 0xC453962B6C91D01E];
@@ -604,7 +673,7 @@ mod tests {
 	}
 
 	#[test]
-    fn encode_128() {
+	fn encode_128() {
 		let key = vec![0x2B, 0xD6, 0x45, 0x9F, 0x82, 0xC5, 0xB3, 0x00, 0x95, 0x2C, 0x49, 0x10, 0x48, 0x81, 0xFF, 0x48];
 		let pt  = vec![0xEA, 0x02, 0x47, 0x14, 0xAD, 0x5C, 0x4D, 0x84];
 		let ct : Vec<u128> = vec![0xF5FB70072DB9D97B0148D85D973E7A6B, 0x247DDBDF9F5E89393CA6772C82B244CC, 0xEFD0F78D74A4EF684D5A86E8DB44EC80, 0xA08E96515249009F1BD13588DA68BC47, 0x896E491ED22D1CD1F98D5DDFC8C5A806, 0xAB482F1650A83132B742882D068A7DCD, 0x15A3B452E5D350098C0673191546965A, 0x9C4C21D80E8D7474C7957E150C002F07];
