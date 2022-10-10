@@ -388,6 +388,30 @@ impl<W> RC5<W> {
 
 	/// Given a particular RC5 instance and a private key, create the key table
 	/// (S in the paper) to be used in encryption/decryption.
+	///
+	/// [Note 4]
+	/// By default, Rust panics at runtime when arithmetic operations over/underflow,
+	/// which happens by necessity in these cryptographic operations.
+	///
+	/// To solve this, a few alternatives exist.
+	/// The one chosen here involves using the [`num_traits`](https://docs.rs/num-traits/0.2.14/num_traits/ops/index.html)
+	/// package, which has traits for the operations used by RC5 - sum, product, bit shifting.
+	/// There are different traits for different behaviors - saturate at the numeric bounds of
+	/// the type, perform the operation while flagging overflow should it occur, silently
+	/// wrap around the bounds of the type (`Wrapping`).
+	///
+	/// Another alternative would be [`std::num::Wrapping`](https://doc.rust-lang.org/stable/std/num/struct.Wrapping.html),
+	/// which would not require an additional crate.
+	/// However, because one of the initial purposes of this crate was to offer a polymorphic
+	/// implementation of RC5, this would require writing many implementations of
+	///
+	/// ```no_run
+	/// impl<W : Add<Output = W>> Add for Wrapping<W> {...}
+	/// impl<W : Sub<Output = W>> Sub for Wrapping<W> {...}
+	/// ...
+	/// ```
+	///
+	/// As these are not provided by the standard lib.
 	pub fn setup_rc5(&self, key: Vec<u8>) -> Result<Vec<W>, RC5Error>
 	where W : RC5Word<T = W> +
 			  WrappingAdd +
@@ -414,9 +438,9 @@ impl<W> RC5<W> {
 			let two = W::one() + W::one();
 			let eight = two * two * two;
 			// There seems to be a typo in the paper: in the pseudocode <<< is used
-			// no signify rotation, but in the implementation << is used instead.
-			// However, the following line also works.
-			//L[i / u] = L[i / u].wrapping_shl(8).wrapping_add(&From::from(key[i]));
+			// no signify rotation, but in the appendix's C implementation << is used instead.
+			// However, it works.
+			// L[i / u] = L[i / u].wrapping_shl(8).wrapping_add(&From::from(key[i]));
 			L[i / u] = W::rotl(L[i / u], eight).wrapping_add(&From::from(key[i]));
 		}
 
@@ -428,7 +452,7 @@ impl<W> RC5<W> {
 
 		S[0] = W::P();
 		for i in 1 ..= t - 1 {
-			S[i] = S[i-1].wrapping_add(&W::Q());
+			S[i] = S[i - 1].wrapping_add(&W::Q());
 		}
 		// Same for the S vector here.
 		if S.len() != t {
