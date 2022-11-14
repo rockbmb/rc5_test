@@ -489,7 +489,7 @@ impl<W> RC5<W> {
 	/// not public and it is the responsibility of its caller - `encode` - to
 	/// only pass it pairs of words and check for the size of the key table,
 	/// that is not done here.
-	fn encode_block(&self, plaintext : &[W], key_table : &[W]) -> Vec<W>
+	fn encode_block(&self, plaintext : &[W; 2], key_table : &[W]) -> [W; 2]
 	where W : RC5Word<T = W> +
 		  WrappingAdd +
 		  PrimInt +
@@ -500,7 +500,6 @@ impl<W> RC5<W> {
 		  <W as TryFrom<u32>>::Error: Debug,
 		  <W as TryInto<u32>>::Error: Debug
 	{
-		let mut cyphertext = vec![W::zero(); 2];
 		let mut A : W = plaintext[0].wrapping_add(&key_table[0]);
 		let mut B : W = plaintext[1].wrapping_add(&key_table[1]);
 
@@ -510,10 +509,7 @@ impl<W> RC5<W> {
 			B = W::rotl(B.bitxor(A), A).wrapping_add(&key_table[2 * i + 1]);
 		}
 
-		cyphertext[0] = A;
-		cyphertext[1] = B;
-
-		cyphertext
+		[A, B]
 	}
 
 	pub fn encode(&self, plaintext : &[W], key_table : &[W]) -> Result<Vec<W>, RC5Error>
@@ -527,22 +523,22 @@ impl<W> RC5<W> {
 		  <W as TryFrom<u32>>::Error: Debug,
 		  <W as TryInto<u32>>::Error: Debug
 	{
+		if plaintext.len().is_zero() {
+			return Ok(vec![]);
+		}
+
 		// The plaintext could be padded here, but then, when decoding, it'd require a way to
 		// keep track of whether the last word in the plaintext was added by this function or not.
 		if plaintext.len().is_odd() {
 			return Err(RC5Error::ImproperlyPaddedPlaintext);
 		}
-		let mut cyphertext = vec![W::zero(); plaintext.len()];
-		if cyphertext.len().is_zero() {
-			return Ok(cyphertext);
-		}
 
-		// This loop is overengineered for sure, but I was curious to see how slice copying worked;
-		// [using this](https://doc.rust-lang.org/std/primitive.slice.html#method.copy_from_slice).
-		for i in (0 .. plaintext.len()).step_by(2)
-		{
-			cyphertext[i ..= i + 1].copy_from_slice(&self.encode_block(&plaintext[i ..= i + 1], key_table));
-		}
+		let cyphertext = plaintext
+			.chunks(2)
+			.flat_map(|chunk| {
+				self.encode_block(chunk.try_into().unwrap(), key_table)
+			})
+			.collect::<Vec<_>>();
 
 		Ok(cyphertext)
 	}
@@ -557,7 +553,7 @@ impl<W> RC5<W> {
 	/// not public and it is the responsibility of its caller - `decode` - to
 	/// only pass it pairs of words and check for the size of the key table,
 	/// that is not done here.
-	fn decode_block(&self, cyphertext : &[W], key_table : &[W]) -> Vec<W>
+	fn decode_block(&self, cyphertext : &[W; 2], key_table : &[W]) -> [W; 2]
 	where W : RC5Word<T = W> +
 		  WrappingSub +
 		  PrimInt +
@@ -568,7 +564,6 @@ impl<W> RC5<W> {
 		  <W as TryFrom<u32>>::Error: Debug,
 		  <W as TryInto<u32>>::Error: Debug
 	{
-		let mut plaintext = vec![W::zero(); 2];
 		let mut B : W = cyphertext[1];
 		let mut A : W = cyphertext[0];
 
@@ -578,10 +573,7 @@ impl<W> RC5<W> {
 			A = W::rotr(A.wrapping_sub(&key_table[2 * i]), B).bitxor(B);
 		}
 
-		plaintext[1] = B.wrapping_sub(&key_table[1]);
-		plaintext[0] = A.wrapping_sub(&key_table[0]);
-
-		plaintext
+		[A.wrapping_sub(&key_table[0]), B.wrapping_sub(&key_table[1])]
 	}
 
 	pub fn decode(&self, cyphertext : &[W], key_table : &[W]) -> Result<Vec<W>, RC5Error>
@@ -596,23 +588,26 @@ impl<W> RC5<W> {
 		  <W as TryFrom<u32>>::Error: Debug,
 		  <W as TryInto<u32>>::Error: Debug
 	{
+		if cyphertext.len().is_zero() {
+			return Ok(vec![]);
+		}
+	
 		// Different situation here: because it has already been encrypted, the cyphertext
 		// cannot at all have odd length.
 		if cyphertext.len().is_odd() {
 			return Err(RC5Error::ImproperlyPaddedCyphertext);
 		}
-		let mut plaintext  = vec![W::zero(); cyphertext.len()];
-		if plaintext.len().is_zero() {
-			return Ok(plaintext);
-		}
 
 		// The plaintext's length has already been checked not to be odd, or zero.
 		// It is therefore safe to call `decode_block` here. A similar reasoning applies
 		// to `encode_block`, see [Note 2].
-		for i in (0 .. plaintext.len()).step_by(2) {
-			plaintext[i ..= i + 1].copy_from_slice(&self.decode_block(&cyphertext[i ..= i + 1], key_table));
-		}
-
+		let plaintext = cyphertext
+			.chunks(2)
+			.flat_map(|chunk| {
+				self.decode_block(chunk.try_into().unwrap(), key_table)
+			})
+			.collect::<Vec<_>>();
+		
 		Ok(plaintext)
 	}
 
