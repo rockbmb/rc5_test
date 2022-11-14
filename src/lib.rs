@@ -1,111 +1,9 @@
-use std::{ops::{Rem, Add, BitXor}, cmp::max, convert::{TryFrom, TryInto}, fmt::Debug, marker::PhantomData};
+use std::{ops::{Rem, Add, BitXor, Sub}, cmp::max, convert::{TryFrom, TryInto}, fmt::Debug, marker::PhantomData};
 use num::{Integer, PrimInt, Zero};
 use num_traits::{WrappingAdd, WrappingSub};
 use num_integer::div_ceil;
 
-/// This module serves to expose a simple API to calculate the magic constants P and Q
-/// for various word sizes, using the `rug` crate for arbitrary-precision floating
-/// point calculations.
-///
-/// The code in `main.rs` is enough to print the constants onto STDOUT, so the code 
-/// below serves as
-/// * a reminder on how to use modules
-/// * more experiments on closures, both returning them from and passing them to functions
-/// * practice to learn how to define and initialize static variables using `lazy_static`
-pub mod quick_maths {
-	use rug::{float::Round, Float, Integer};
-	use std::collections::HashMap;
-	use lazy_static::lazy_static;
-
-	lazy_static!{
-		/// This is a `Hashmap` that maps word sizes, in bits, to the corresponding
-		/// value of the `Q` constant for that word type e.g. `QS.get(128)` is
-		/// the value of `Q` for `u128`.
-		/// `PS` does the same for the `P` constant.
-		pub static ref QS : HashMap<u32, Integer> = {
-			let mut h = HashMap::new();
-			for i in (3 ..= 7).map(|n| {2u32.pow(n)}) {
-				h.insert(i, q_w_prec_200(i));	
-			}
-			h
-		};
-		pub static ref PS : HashMap<u32, Integer> = {
-			let mut h = HashMap::new();
-			for i in (3 ..= 7).map(|n| {2u32.pow(n)}) {
-				h.insert(i, p_w_prec_200(i));	
-			}
-			h
-		};
-	}
-
-	fn round_to_nearest_odd(fl : Float) -> impl Fn() -> Integer {
-		let round_to_nearest_odd = move || {
-			let low = fl.to_integer_round(Round::Down).map(|opt| { opt.0 }).unwrap_or(Integer::new());
-			let high = fl.to_integer_round(Round::Up).map(|opt| { opt.0 }).unwrap_or(Integer::new());
-			let nearest = fl.to_integer_round(Round::Nearest).map(|opt| { opt.0 }).unwrap_or(Integer::new());
-
-			if nearest.is_odd() {
-				nearest
-			// If the nearest number is not odd, it must be even, so the furthest must be odd.
-			// At this point it is unknown which is the furthest, whether the floor `low` or the
-			// ceiling `high`.
-			} else if high == nearest {
-				low
-			} else {
-				high
-			}
-		};
-		round_to_nearest_odd
-	}
-
-	fn p_w_wrapper<F>(f : F, w : u32, prec : u32) -> Integer
-	where F : Fn(u32, u32) -> Integer
-	{
-		f(w, prec)
-	}
-
-	fn p_w(w : u32, prec : u32) -> Integer
-	{
-		let p_w = |w : u32, prec : u32| {
-			let f = Float::with_val(200, 1);
-			let e = f.exp();
-	
-			// This clone() is necessary because of closure semantics.
-			// Were this not cloned, then p_w would not be callable more than
-			// once, as rug::Float does not implement Copy.
-			let f1 = e - 2;
-	
-			let pow = Float::i_pow_u(2, w);
-			let f2 = Float::with_val(prec, pow);
-	
-			round_to_nearest_odd(f1 * f2)()
-		};
-
-		p_w_wrapper(p_w, w, prec)
-	}
-
-	pub fn p_w_prec_200(w : u32) -> Integer
-	{
-		p_w(w, 200)
-	}
-
-	fn q_w (w : u32, prec : u32) -> Integer
-	{
-		let sqrt5 = Float::with_val(prec, 5.0).sqrt();
-		let phi = (1 + sqrt5) / 2;
-		let f1 = phi - 1;
-
-		let pow = Float::i_pow_u(2, w);
-		let f2 = Float::with_val(prec, pow);
-
-		round_to_nearest_odd(f1 * f2)()
-	}
-
-	pub fn q_w_prec_200(w : u32) -> Integer
-	{
-		q_w(w, 200)
-	}
-}
+mod p_q_consts;
 
 type WordSize = u32;
 
@@ -145,7 +43,7 @@ pub enum RC5Error {
 /// This means that using e.g. signed word types like `i32` that do not implement
 /// this trait will fail at compile-time.
 ///
-/// [Note 3]
+/// Note 3
 /// The reason this trait relies on an associated type instead of generics is that
 /// generics would permit the same unsigned word type - e.g. `u32` - to offer more
 /// than one implementation, which in this context would not make sense.
@@ -174,7 +72,7 @@ pub trait RC5Word
 
 	fn Q() -> Self::T;
 
-	/// [Note 1]
+	/// Note 1
 	/// The reason TryInto can be unwrapped so carelessly is the following:
 	/// - The unsigned word types to be used all have bit lengths that
 	/// obviously fit into a u32 - u128 is the highest that Rust does natively offer
@@ -201,7 +99,7 @@ pub trait RC5Word
 		x.rotate_left(y.try_into().unwrap())
 	}
 
-	/// See [Note 1]
+	/// See Note 1
 	fn rotr(x : Self::T, y_ : Self::T) -> Self::T
 	where Self::T : PrimInt +
 		  TryFrom<u32> +
@@ -227,7 +125,7 @@ impl RC5Word for u8 {
 	// Showcasing use of the P static variable, a hashmap populated lazily at run-time,
 	// to get the P magic constant for the 8-bit word type.
 	fn P() -> u8 {
-		quick_maths::PS
+		p_q_consts::PS
 			.get(&u8::get_size_in_bits())
 			.map(|i| {i.to_u8_wrapping()})
 			.unwrap_or(0xb7)
@@ -389,7 +287,7 @@ impl<W> RC5<W> {
 	/// Given a particular RC5 instance and a private key, create the key table
 	/// (S in the paper) to be used in encryption/decryption.
 	///
-	/// [Note 4]
+	/// Note 4
 	/// By default, Rust panics at runtime when arithmetic operations over/underflow,
 	/// which happens by necessity in these cryptographic operations.
 	///
@@ -406,9 +304,8 @@ impl<W> RC5<W> {
 	/// implementation of RC5, this would require writing many implementations of
 	///
 	/// ```no_run
-	/// impl<W : Add<Output = W>> Add for Wrapping<W> {...}
-	/// impl<W : Sub<Output = W>> Sub for Wrapping<W> {...}
-	/// ...
+	/// //impl<W : Add<Output = W>> Add for Wrapping<W> {...}
+	/// //impl<W : Sub<Output = W>> Sub for Wrapping<W> {...}
 	/// ```
 	///
 	/// As these are not provided by the standard lib.
@@ -484,7 +381,7 @@ impl<W> RC5<W> {
 	/// It does so one RC5 block at a time. Each block is composed of `2w` bits,
 	/// where `w` is the length, in bits, of the word type chosen to run RC5 with.
 	///
-	/// [Note 2]
+	/// Note 2
 	/// The plaintext vector is assumed to have length 2; since this function is
 	/// not public and it is the responsibility of its caller - `encode` - to
 	/// only pass it pairs of words and check for the size of the key table,
@@ -548,7 +445,7 @@ impl<W> RC5<W> {
 	/// It does so one RC5 block at a time. Each block is composed of `2w` bits,
 	/// where `w` is the length, in bits, of the word type chosen to run RC5 with.
 	///
-	/// [Note 2]
+	/// Note 2
 	/// The plaintext vector is assumed to have length 2; since this function is
 	/// not public and it is the responsibility of its caller - `decode` - to
 	/// only pass it pairs of words and check for the size of the key table,
@@ -577,7 +474,7 @@ impl<W> RC5<W> {
 	}
 
 	pub fn decode(&self, cyphertext : &[W], key_table : &[W]) -> Result<Vec<W>, RC5Error>
-	// See [Note 3] for the reason why these bounds differ from those in `RC5::encode`.
+	// See Note 3 for the reason why these bounds differ from those in `RC5::encode`.
 	where W : RC5Word<T = W> +
 		  WrappingSub +
 		  PrimInt +
@@ -600,7 +497,7 @@ impl<W> RC5<W> {
 
 		// The plaintext's length has already been checked not to be odd, or zero.
 		// It is therefore safe to call `decode_block` here. A similar reasoning applies
-		// to `encode_block`, see [Note 2].
+		// to `encode_block`, see Note 2.
 		let plaintext = cyphertext
 			.chunks(2)
 			.flat_map(|chunk| {
