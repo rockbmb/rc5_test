@@ -78,7 +78,7 @@ fn p_w(w : u32, prec : u32) -> Integer
 	p_w_wrapper(p_w, w, prec)
 }
 
-pub fn p_w_prec_200(w : u32) -> Integer
+fn p_w_prec_200(w : u32) -> Integer
 {
 	p_w(w, 200)
 }
@@ -95,7 +95,7 @@ fn q_w (w : u32, prec : u32) -> Integer
 	round_to_nearest_odd(f1 * f2)()
 }
 
-pub fn q_w_prec_200(w : u32) -> Integer
+fn q_w_prec_200(w : u32) -> Integer
 {
 	q_w(w, 200)
 }

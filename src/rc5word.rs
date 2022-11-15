@@ -1,8 +1,6 @@
 use std::{convert::{TryFrom, TryInto}, fmt::Debug, ops::Rem};
 use num::PrimInt;
 
-use crate::p_q_consts;
-
 pub type WordSize = u32;
 
 /// The `RC5Word` trait serves to restrict which primitive word types can serve
@@ -94,7 +92,7 @@ impl RC5Word for u8 {
 	// Showcasing use of the P static variable, a hashmap populated lazily at run-time,
 	// to get the P magic constant for the 8-bit word type.
 	fn P() -> u8 {
-		p_q_consts::PS
+		crate::math::PS
 			.get(&u8::get_size_in_bits())
 			.map(|i| {i.to_u8_wrapping()})
 			.unwrap_or(0xb7)
