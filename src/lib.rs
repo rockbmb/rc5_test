@@ -14,6 +14,13 @@ use crate::key::RC5Key;
 type NumberOfRounds = u32;
 
 /**
+Length of the blocks RC5 uses when encrypting/decrypting.
+For a given word size `w`, RC5 encrypts/decrypts blocks of 2
+`* w` bits at a time.
+ */
+pub const BLOCK_LENGTH : usize = 2;
+
+/**
  * Maximum allowable number of rounds, by default the paper advised it to be 255.
  */
 pub const MAX_ALLOWABLE_ROUNDS : NumberOfRounds = 255;
@@ -277,7 +284,7 @@ impl<W> RC5<W> {
 		}
 
 		let cyphertext = plaintext
-			.chunks(2)
+			.chunks(BLOCK_LENGTH)
 			.flat_map(|chunk| {
 				self.encode_block(chunk.try_into().unwrap(), key_table)
 			})
@@ -345,7 +352,7 @@ impl<W> RC5<W> {
 		// It is therefore safe to call `decode_block` here. A similar reasoning applies
 		// to `encode_block`, see Note 2.
 		let plaintext = cyphertext
-			.chunks(2)
+			.chunks(BLOCK_LENGTH)
 			.flat_map(|chunk| {
 				self.decode_block(chunk.try_into().unwrap(), key_table)
 			})
